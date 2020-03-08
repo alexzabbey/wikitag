@@ -1,0 +1,60 @@
+  PERSON: # People, including fictional.
+    - Q5 # person
+    - Q95074 # fictional character
+  NORP: # Nationalities or religious or political groups.
+    - Q49773 # social movement +?
+    - Q1530022 # religious organization +?
+    #         "Q7210356",  # political organization +1/2? # problematic
+    - Q41710 # ethnic group
+  FAC: # Buildings, airports, highways, bridges, etc.
+    include:
+      - Q811979 # architectural structure
+      - Q121359 # insfrastructure
+    not: 
+      - Q1068715 # telecommunications network
+  ORG: # Companies, agencies, institutions, etc.
+    include:
+      # - Q163740 # nonprofit organization - problematic
+      - Q783794 # company
+    exclude:
+      - Q2097994 # municipal corporation
+      - Q7210356 # political organization
+  GPE: # Countries, cities, states.
+    - Q15642541 # human-geographic territorial entity
+    - Q486972 # human settlement
+    - Q28108 #political system
+    #         "Q35798", # executive branch (רשות מבצעת)
+    #         "Q11204", #legislature (מחוקקת),
+  LOC: # Non-GPE locations, mountain ranges, bodies of water.
+    - Q27096220 # natural geographic entity
+    # "PRODUCT":[], # Objects, vehicles, foods, etc. (Not services.)
+  EVENT: # Named hurricanes, battles, wars, sports events, etc.
+    - Q13418847 # historical event
+    - Q8065 # natural disaster
+    - Q1656682 # event (includes festivals, sporting events)
+    - Q350604 # armed conflict
+  WORK_OF_ART: # Titles of books, songs, etc.
+    include:
+      - Q17537576 # creative work
+      - Q732577 # publication
+    exclude:
+      - Q14897293 # fictional entity
+    not:
+      - Q2135465 # legal concept
+  LAW: # Named documents made into laws.
+    - Q3150005 # legal instrument
+  LANGUAGE: # Any named language.
+    - Q315 # language
+    - Q17376908 # languoid (might be overkill)
+  DATE: # Absolute or relative dates or periods.
+    - Q577 # year (for the time being)
+    - Q3186692 # calendar year
+    - Q14795564 # point in time with respect to recurrent timeframe
+    - Q1790144 # unit of time
+  #     "TIME": [],  # Times smaller than a day.
+  #     "PERCENT": [],  # Percentage, including ”%“.
+  #     "MONEY": [],  # Monetary values, including unit.
+  #     "QUANTITY": [],  # Measurements, as of weight or distance.
+  #     "ORDINAL": [],  # “first”, “second”, etc.
+  #     "CARDINAL": [],  # Numerals that do not fall under another type.
+  # is a political NGO or a political party considered a NORP or an ORG?
