@@ -17,118 +17,148 @@ from yaml import load, Loader
 from requests import Session, exceptions
 import pandas as pd
 import mwparserfromhell as mwp
-from more_itertools import split_when
+import wikitextparser as wtp
+from more_itertools import split_when, split_at, chunked
 from yap_tools import *
 from apis import *
 from helpers import *
 from hebtokenizer import tokenize
+from pprint import pprint
+from typing import Dict, Tuple, List
+from operator import itemgetter
 
 ### ACTIONS
 
+WikiCode = mwp.wikicode.Wikicode
+WikiLink = mwp.nodes.wikilink.Wikilink
+
 
 @timing
-def parse_wiki_page(page_title):
-    wiki = mwp.parse(get_wp_fulltext(page_title))
-    # remove files
-    for l in wiki.filter_wikilinks():
-        if l.startswith("[[קטגוריה") or l.startswith("[[קובץ"):
-            wiki.remove(l)
+def parse_wiki_page(page_title: str) -> WikiCode:
+    wiki = wtp.parse(get_wp_fulltext(page_title))
+    # remove files and categories
+    for l in wiki.wikilinks:
+        if l.title.startswith("קטגוריה:") or l.title.startswith("קובץ:"):
+            del l[:]
     # remove extrenal links section
-    wiki.remove(wiki.get_sections(matches=r"קישורים חיצוניים"))
-    # remove headings
-    for h in wiki.filter_headings():
-        wiki.remove(h)
+    for sec in wiki.sections[1:]:
+        if "קישורים חיצוניים" in sec.title:
+            del sec[:]
+        else:
+            del sec.title
+    for l in wiki.get_lists():
+        del l[:]
+    for x in ["templates", "tables"]:
+        for attr in getattr(wiki, x):
+            del attr[:]
     # replace tags with text
-    for x in wiki.filter_tags():
-        index = wiki.index(x)
-        wiki.remove(x)
-        wiki.insert(index, x.contents)
+    for tag in wiki.get_tags():
+        print(tag)
+
+    # for x in wiki.filter_tags():
+    #     index = wiki.index(x)
+    #     wiki.remove(x)
+    #     wiki.insert(index, x.contents)
 
     # further reading
     # photo gallery - https://he.wikipedia.org/wiki/%D7%AA%D7%A7%D7%95%D7%9E%D7%94/
-    # tables - https://he.wikipedia.org/wiki/%D7%92%D7%9C%D7%A2%D7%93_%D7%A7%D7%9E%D7%97%D7%99
     print("finished parsing wiki page")
-    return wiki
+    return mwp.parse(wiki.string)
+
+
+def basic_tag_prep():
+    with open("tags.yaml", "r", encoding="utf-8") as f:
+        tags = load(f, Loader=Loader)
+    for k, v in tags.items():
+        if type(v) == list:
+            tags[k] = {"include": v, "exclude": None, "not": None}
+        else:
+            tags[k].setdefault("exclude", None)
+            tags[k].setdefault("not", None)
+    return tags
+
+
+# @timing
+# def tag_prep(filename: str = "tags.yaml") -> dict:  # FIX: upgrade typing
+#     if os.path.isfile("prepped_tags.json"):
+#         with open("prepped_tags.json", "r", encoding="utf-8") as f:
+#             return json.load(f)
+#     else:
+#         with open(filename, "r", encoding="utf-8") as f:
+#             tags = load(f, Loader=Loader)
+
+#         for k, v in tags.items():
+#             if type(v) == list:
+#                 tags[k] = {"include": v, "exclude": None, "not": None}
+#             else:
+#                 tags[k].setdefault("exclude", None)
+#                 tags[k].setdefault("not", None)
+
+#         for k, v in tags.items():
+#             tags[k]["include"] = get_subclasses(v["include"], exclude=v["exclude"])
+#             tags[k]["not"] = get_subclasses(v["not"])
+#         print("finished prepping tags")
+#         with open("prepped_tags.json", "w", encoding="utf-8") as fp:
+#             json.dump(tags, fp)
+#         return tags
+
+
+def create_query(chunk: List[str], tags: dict, debug: bool = False):
+    return f"""SELECT {"?ti ?clLabel ?t" if debug else "?t ?ti"} (COUNT(?sc) AS ?c) WHERE {{
+        VALUES ?ti {{ {" ".join([f'"{title}"@he' for title in chunk])} }}
+        VALUES ?sc {{ { " ".join(["wd:"+x for x in  sum([v["include"] for v in tags.values()], [])])} }}
+        ?sl schema:about ?i; 
+            schema:isPartOf <https://he.wikipedia.org/>;
+            schema:name ?ti.
+        {"?i wdt:P31 ?cl. ?cl wdt:P279* ?sc." if debug else "?i wdt:P31/wdt:P279* ?sc."}
+        BIND(COALESCE( {", ".join(["IF(" + " || ".join([f"?sc = wd:{q}" for q in v["include"]]) + f', "{k}", 1/0)' for k, v in tags.items()]) } ) AS ?t).
+        {'SERVICE wikibase:label { bd:serviceParam wikibase:language "en".}' if debug else '' } }}
+        GROUP BY {"?ti ?clLabel ?t" if debug else "?ti ?t"}"""
 
 
 @timing
-def tag_prep(filename="tags.yaml"):
-    if os.path.isfile("prepped_tags.json"):
-        with open("prepped_tags.json", "r", encoding="utf-8") as f:
-            return json.load(f)
-    else:
-        with open(filename, "r", encoding="utf-8") as f:
-            tags = load(f, Loader=Loader)
-
-        for k, v in tags.items():
-            if type(v) == list:
-                tags[k] = {"include": v, "exclude": None, "not": None}
-            else:
-                tags[k].setdefault("exclude", None)
-                tags[k].setdefault("not", None)
-
-        for k, v in tags.items():
-            tags[k]["include"] = get_subclasses(v["include"], exclude=v["exclude"])
-            tags[k]["not"] = get_subclasses(v["not"])
-        print("finished prepping tags")
-        for k, v in tags["ORG"].items():
-            print(f"{k}: {type(v)}")
-        with open("prepped_tags.json", "w", encoding="utf-8") as fp:
-            json.dump(tags, fp)
-        return tags
-
-
-@timing
-def title_to_tag(wiki, tags):
-    # wp_title -> wdid -> instance -> tag
-    # pair wdid with wp title
-    Q_list = list(
-        set(
-            get_wdid_from_wp(str(t)) for t in [l.title for l in wiki.filter_wikilinks()]
+def title_to_tag(wiki: WikiCode, tags: dict, debug: bool = False):
+    # # wp_title -> wdid -> instance -> tag
+    results = []
+    titles = [str(l.title).replace('"', '\\"') for l in wiki.filter_wikilinks()]
+    # ?i = item, ?ti = title, ?cl = class, ?t = tag ?sc = superclass, ?sl = sitelink
+    try:
+        for chunk in list(chunked(titles, 20)):
+            results += sparql_query(create_query(chunk, tags, debug))
+    except exceptions.HTTPError:
+        results = []
+        for chunk in list(chunked(titles, 10)):
+            results += sparql_query(create_query(chunk, tags, debug))
+    if debug:
+        pd.DataFrame(results).to_csv(
+            "wikidata_query_results.csv", index=False, encoding="utf-8-sig"
         )
-        - {False}
-    )
-    wdid_to_instance = instance_of(Q_list)
-    title_to_instance = {}
-    # for k, v in wp_title_to_wdid.items():
-    #     if v != False:
-    #         title_to_instance[k[0]] = wdid_to_instance[v]
-    for k in [l.title for l in wiki.filter_wikilinks()]:
-        v = get_wdid_from_wp(str(k))
-        if v:
-            title_to_instance[str(k)] = wdid_to_instance[v]
-
     tagged_titles = {}
-    for title, Q_list in title_to_instance.items():
-        options = []
-        for Q in Q_list:
-            for tag in tags:
-                if Q in tags[tag]["not"]:
-                    break
-                if Q in tags[tag]["include"]:
-                    options.append((Q, tag))
-        tagged_titles[title] = options
-    tagged_titles = {k: most_popular(v) for k, v in tagged_titles.items() if len(v) > 0}
+    for k, g in groupby(results, key=lambda x: x["ti"]):
+        tagged_titles[k] = max(
+            {x["t"]: x["c"] for x in list(g)}.items(), key=itemgetter(1)
+        )[0]
+    print(tagged_titles)
 
-    def tag_wikilink(wl):
+    def tag_wikilink(wl: WikiLink) -> Tuple[str, str]:
         tagged_list = []
         tag = tagged_titles.get(str(wl.title), "O")
         text = str(wl.text).split() if wl.text else str(wl.title).split()
         tags = (
             [f"B-{tag}"] + [f"I-{tag}"] * len(text) if tag != "O" else [tag] * len(text)
         )
-        return zip(text, tags)
+        res = list(zip(text, tags))
+        return res
 
     final = []
-    for i, n in enumerate(wiki.nodes):
-        if not isinstance(n, mwp.nodes.template.Template):
-            if isinstance(n, mwp.nodes.text.Text):
-                for x in n.split():
-                    final.append((x, "O"))
-            elif isinstance(n, mwp.nodes.wikilink.Wikilink):
-                final += tag_wikilink(n)
-
+    for n in wiki.nodes:
+        if isinstance(n, WikiLink):
+            final += tag_wikilink(n)
+        else:
+            for x in n.split():
+                final.append((x, "O"))
     final_df = pd.DataFrame(final, columns=["untokenized_word", "tag"])
+    final_df.to_csv("test.csv", encoding="utf-8-sig")
 
     def tokenize_df(df):
         df["untokenized_word"] = df["untokenized_word"].apply(tokenize)
@@ -138,6 +168,7 @@ def title_to_tag(wiki, tags):
         )
         return df[["word", "tag", "token"]].reset_index(drop=True)
 
+    # tokenize_df(final_df).to_csv("test.csv", encoding="utf-8-sig")
     return [
         [y for y in x if y[1] != "O"] for x in split_df_by_punct(tokenize_df(final_df))
     ]
@@ -177,19 +208,25 @@ def tag_sentences(sentence_list, tagged_titles_list):
     return pd.concat(final)
 
 
-if __name__ == "__main__":
+@timing
+def main():
     wiki = parse_wiki_page("רכבות במצרים")
-    if not os.path.isfile("tagged_titles_list.pickle"):
-        tags = tag_prep()
-        tagged_titles_list = title_to_tag(wiki, tags)
-        with open("tagged_titles_list.pickle", "wb") as f:
-            pickle.dump(tagged_titles_list, f)
-    else:
-        with open("tagged_titles_list.pickle", "rb") as f:
-            tagged_titles_list = pickle.load(f)
+    # if not os.path.isfile("tagged_titles_list.pickle"):
+    # tags = tag_prep()
+    tags = basic_tag_prep()
+    tagged_titles_list = title_to_tag(wiki, tags, debug=False)
+    # with open("tagged_titles_list.pickle", "wb") as f:
+    #     pickle.dump(tagged_titles_list, f)
+    # else:
+    # with open("tagged_titles_list.pickle", "rb") as f:
+    #     tagged_titles_list = pickle.load(f)
     sentence_list = tokenize_text(wiki)
     final_df = tag_sentences(sentence_list, tagged_titles_list)
     final_df.to_csv("final.csv", encoding="utf-8-sig")
+
+
+if __name__ == "__main__":
+    main()
 
 ## YAPPING
 # df_list = []
@@ -200,3 +237,29 @@ if __name__ == "__main__":
 #     if i > 10:
 #         break
 # word_and_pos = pd.concat(df_list)
+
+## OLD
+# def title_to_tag(wiki: WikiCode, tags: dict):
+# # wp_title -> wdid -> instance -> tag
+# # pair wdid with wp title
+# {str(t): get_wdid_from_wp(str(t)) for t in [l.title for l in wiki.filter_wikilinks()]}
+
+# Q_list = list(
+#     set(
+#         get_wdid_from_wp(str(t)) for t in [l.title for l in wiki.filter_wikilinks()]
+#     )
+#     - {False}
+# )
+# wdid_to_instance = get_instance_of(Q_list)
+
+# pprint(Q_list)
+# pprint(wdid_to_instance)
+
+# title_to_instance = {}
+# # for k, v in wp_title_to_wdid.items():
+# #     if v != False:
+# #         title_to_instance[k[0]] = wdid_to_instance[v]
+# for k in [l.title for l in wiki.filter_wikilinks()]:
+#     if v:
+#         title_to_instance[str(k)] = wdid_to_instance[v]
+

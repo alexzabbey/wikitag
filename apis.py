@@ -1,5 +1,9 @@
 from requests import Session, exceptions
 from diskcache import Cache
+from typing import Union, Optional
+from pprint import pprint
+from itertools import groupby
+import re
 
 cache = Cache("./cache")
 
@@ -9,11 +13,11 @@ s = Session()
 s.headers = {"User-Agent": "WikiTagger/0.0 (alexzabbey@gmail.com) Python/Requests/3.8"}
 
 
-def enter_wd_api(d):
+def enter_wd_api(d: dict) -> dict:
     return d["query"]["pages"][list(d["query"]["pages"].keys())[0]]
 
 
-def get_wp_fulltext(title):
+def get_wp_fulltext(title: str) -> dict:
     params = {
         "action": "query",
         "prop": "revisions",
@@ -29,7 +33,7 @@ def get_wp_fulltext(title):
 
 
 @cache.memoize()
-def get_wdid_from_wp(title):
+def get_wdid_from_wp(title: str) -> Union[str, bool]:
     params = {"action": "query", "prop": "pageprops", "titles": title, "format": "json"}
     res = s.get("https://he.wikipedia.org/w/api.php", params=params)
     res.raise_for_status()
@@ -40,63 +44,29 @@ def get_wdid_from_wp(title):
         return False
 
 
-def graphql_query(query):
-    # posting to GraphQL server
-    for i in range(3):
-        try:
-            res = s.post(
-                "https://tools.wmflabs.org/tptools/wdql.php",
-                json={"query": "{" + query + "}"},
-            )
-            res.raise_for_status()
-            return res.json()
-        except exceptions.HTTPError:
-            print(f"GraphQL try {i}")
-            continue
-
-
-def instance_of(Q_list):
-    query = ""
-    for Q in Q_list:
-        query += (
-            f"""{Q}: item(id: "{Q}")"""
-            + """ {statements(propertyIds: "P31") { mainsnak { ... on PropertyValueSnak { value { ... on Entity { id }}}}}}
-            """
-        )
-
-    j = graphql_query(query)
-    return {
-        k: [i["mainsnak"]["value"]["id"] for i in j["data"][k]["statements"]]
-        for k in j["data"].keys()
-    }
-
-
-def sparql_query(query, labels=False, without_roots=False):
+def sparql_query(query: str) -> list:
+    print("running sparql query")
     url = "https://query.wikidata.org/sparql"
-    if without_roots:
-        query = query.replace("*", "+")
-    res = s.get(url, params={"query": query, "format": "json"})
-    res.raise_for_status()
-    j = res.json()
-    var = [var for var in j["head"]["vars"] if "Label" not in var][0]
-    if labels:
-        result = [
-            (d[var]["value"].split("/")[-1], d[var + "Label"]["value"])
-            for d in j["results"]["bindings"]
-        ]
-    else:
-        result = list(
-            set([x[var]["value"].split("/")[-1] for x in j["results"]["bindings"]])
-        )
-    #     if without_roots:
-    #         result = list(result - set(roots))
+    try:
+        res = s.get(
+            url, params={"query": re.sub(r"\s+", " ", query), "format": "json"}
+        )  # shorter query
+        res.raise_for_status()
+        j = res.json()
+    except exceptions.HTTPError as e:
+        print(e.response.status_code)
+        print(query)
+        raise exceptions.HTTPError
+
+    result = j["results"]["bindings"]
+    for d in result:
+        for k, v in d.items():
+            d[k] = v["value"].split("/")[-1]
     return result
 
 
-@cache.memoize()
-def get_subclasses(roots, exclude=None):
-    print("starting SPARQL query")
-    # SPARQL
+# @cache.memoize()
+def get_subclasses(roots: Optional[list], exclude: bool = None) -> list:
     if roots == None:
         return []
 
@@ -107,28 +77,24 @@ def get_subclasses(roots, exclude=None):
             + " } ?subclass wdt:P279* ?roots.}"
         )
 
-    result = sparql_query(build_query(roots))
+    result = [x["subclass"] for x in sparql_query(build_query(roots))]
     if exclude:
-        result = list(set(result) - set(sparql_query(build_query(exclude))))
+        exclude_list = [x["subclass"] for x in sparql_query(build_query(exclude))]
+        result = list(set(result) - set(exclude_list))
     return result
 
 
-def get_instance_of(q):
-    params = {
-        "action": "wbgetclaims",
-        "entity": q,
-        "property": "P31",
-        "rank": "normal",
-        "format": "json",
+def get_instance_of(Q_list: list) -> dict:
+    query = (
+        "SELECT ?entity ?class WHERE { VALUES ?entity {"
+        + "\n".join(["wd:" + q for q in Q_list])
+        + "} ?entity wdt:P31 ?class. }"
+    )
+
+    result = sparql_query(query)
+    res = {
+        k: [i["class"] for i in list(g)]
+        for k, g in groupby(result, key=lambda x: x["entity"])
     }
-    res = s.get("https://www.wikidata.org/w/api.php", params=params)
-    res.raise_for_status()
-    return [
-        x["mainsnak"]["datavalue"]["value"]["id"] for x in res.json()["claims"]["P31"]
-    ]
 
-
-#     if d.get("pageprops", False):
-#         return d["pageprops"].get("wikibase_item", False)
-#     else:
-#         return False
+    return res

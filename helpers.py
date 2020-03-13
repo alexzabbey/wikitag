@@ -1,4 +1,4 @@
-import pandas as pd 
+import pandas as pd
 from datetime import datetime
 from collections import Counter
 from functools import wraps
@@ -18,7 +18,9 @@ def timing(f):
         te = datetime.now()
         print(f"func: {f.__name__}, args: {[type(a) for a in args]}, took: {te-ts}")
         return result
+
     return wrap
+
 
 ## DOMAIN-SPECIFIC HELPERS
 def split_BIO(x, y):
