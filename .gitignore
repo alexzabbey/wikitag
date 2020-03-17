@@ -3,3 +3,7 @@ __pycache__/
 .vscode/
 .ipynb_checkpoints/
 cache/*
+old.py
+tagged_titles_cache.json
+*.csv
+*.log

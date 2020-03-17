@@ -1,11 +1,10 @@
 from requests import Session, exceptions
-from diskcache import Cache
 from typing import Union, Optional
 from pprint import pprint
 from itertools import groupby
-import re
+import re, logging
 
-cache = Cache("./cache")
+# cache = Cache("./cache")
 
 # TODO: add cache refreshing
 
@@ -28,24 +27,16 @@ def get_wp_fulltext(title: str) -> dict:
     }
     res = s.get("https://he.wikipedia.org/w/api.php", params=params)
     res.raise_for_status()
-    print(f"got full wikipedia text from page {title}")
-    return enter_wd_api(res.json())["revisions"][0]["slots"]["main"]["*"]
-
-
-@cache.memoize()
-def get_wdid_from_wp(title: str) -> Union[str, bool]:
-    params = {"action": "query", "prop": "pageprops", "titles": title, "format": "json"}
-    res = s.get("https://he.wikipedia.org/w/api.php", params=params)
-    res.raise_for_status()
-    d = enter_wd_api(res.json())
-    if d.get("pageprops", False):
-        return d["pageprops"].get("wikibase_item", False)
-    else:
-        return False
+    logging.info(f"got full wikipedia text from page {title}")
+    try:
+        return enter_wd_api(res.json())["revisions"][0]["slots"]["main"]["*"]
+    except IndexError:
+        logging.info(f"whoops, it seems like {title} is not a wikipedia page")
+        raise Exception(f"whoops, it seems like {title} is not a wikipedia page")
 
 
 def sparql_query(query: str) -> list:
-    print("running sparql query")
+    logging.debug(f"running sparql query:\n{query}")
     url = "https://query.wikidata.org/sparql"
     try:
         res = s.get(
@@ -54,8 +45,8 @@ def sparql_query(query: str) -> list:
         res.raise_for_status()
         j = res.json()
     except exceptions.HTTPError as e:
-        print(e.response.status_code)
-        print(query)
+        logging.info(query)
+        logging.info(f"raised a HTTP {e.response.status_code} error")
         raise exceptions.HTTPError
 
     result = j["results"]["bindings"]
@@ -64,37 +55,3 @@ def sparql_query(query: str) -> list:
             d[k] = v["value"].split("/")[-1]
     return result
 
-
-# @cache.memoize()
-def get_subclasses(roots: Optional[list], exclude: bool = None) -> list:
-    if roots == None:
-        return []
-
-    def build_query(roots):
-        return (
-            "SELECT ?subclass WHERE { VALUES ?roots { "
-            + " ".join(["wd:" + r for r in roots])
-            + " } ?subclass wdt:P279* ?roots.}"
-        )
-
-    result = [x["subclass"] for x in sparql_query(build_query(roots))]
-    if exclude:
-        exclude_list = [x["subclass"] for x in sparql_query(build_query(exclude))]
-        result = list(set(result) - set(exclude_list))
-    return result
-
-
-def get_instance_of(Q_list: list) -> dict:
-    query = (
-        "SELECT ?entity ?class WHERE { VALUES ?entity {"
-        + "\n".join(["wd:" + q for q in Q_list])
-        + "} ?entity wdt:P31 ?class. }"
-    )
-
-    result = sparql_query(query)
-    res = {
-        k: [i["class"] for i in list(g)]
-        for k, g in groupby(result, key=lambda x: x["entity"])
-    }
-
-    return res

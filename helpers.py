@@ -3,6 +3,7 @@ from datetime import datetime
 from collections import Counter
 from functools import wraps
 from more_itertools import split_after
+import logging, argparse
 
 ## HELPERS
 def most_popular(l):
@@ -16,7 +17,9 @@ def timing(f):
         ts = datetime.now()
         result = f(*args, **kw)
         te = datetime.now()
-        print(f"func: {f.__name__}, args: {[type(a) for a in args]}, took: {te-ts}")
+        logging.debug(
+            f"func: {f.__name__}, args: {[type(a) for a in args]}, took: {te-ts}"
+        )
         return result
 
     return wrap
@@ -43,3 +46,14 @@ def split_df_by_punct(df):
             sublist[-1] = (list(sublist[-1])[0][:-1], *sublist[-1][1:])
             fixed.append(sublist)
     return fixed
+
+
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ("yes", "true", "t", "y", "1"):
+        return True
+    elif v.lower() in ("no", "false", "f", "n", "0"):
+        return False
+    else:
+        raise argparse.ArgumentTypeError("Boolean value expected.")
